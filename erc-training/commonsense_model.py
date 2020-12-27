@@ -9,7 +9,7 @@ from model import SimpleAttention, MatchingAttention, Attention
 class CommonsenseRNNCell(nn.Module):
 
     def __init__(self, D_m, D_s, D_g, D_p, D_r, D_i, D_e, listener_state=False,
-                            context_attention='simple', D_a=100, dropout=0.5, emo_gru=True):
+                            context_attention='simple', D_a=100, dropout=0.5, emo_gru=True):    # emo_gru=True
         super(CommonsenseRNNCell, self).__init__()
 
         self.D_m = D_m
@@ -60,16 +60,17 @@ class CommonsenseRNNCell(nn.Module):
         x1, x2, x3, o1, o2 -> batch, D_m
         x1 -> effect on self; x2 -> reaction of self; x3 -> intent of self
         o1 -> effect on others; o2 -> reaction of others
-        qmask -> batch, party
-        g_hist -> t-1, batch, D_g
+        qmask -> batch, party       # 用户是谁
+        g_hist -> t-1, batch, D_g  g_hist: i_{A,t-1}
         q0 -> batch, party, D_p
         e0 -> batch, self.D_e
         """
         qm_idx = torch.argmax(qmask, 1)
+        # q_{A,t-1}
         q0_sel = self._select_parties(q0, qm_idx)
         r0_sel = self._select_parties(r0, qm_idx)
 
-        ## global state ##
+        ## global state ## g_hist: i_{A,t-1}
         g_ = self.g_cell(torch.cat([U, q0_sel, r0_sel], dim=1),
                 torch.zeros(U.size()[0],self.D_g).type(U.type()) if g_hist.size()[0]==0 else
                 g_hist[-1])
@@ -86,6 +87,7 @@ class CommonsenseRNNCell(nn.Module):
         U_r_c_ = torch.cat([U, x2, c_], dim=1).unsqueeze(1).expand(-1, qmask.size()[1],-1)
         # print ('urc', U_r_c_.size())
         # print ('u x2, c', U.size(), x2.size(), c_.size())
+        # r_speaker
         rs_ = self.r_cell(U_r_c_.contiguous().view(-1, self.D_m+self.D_s+self.D_g),
                 r0.view(-1, self.D_r)).view(U.size()[0], -1, self.D_r)
         # rs_ = self.dropout(rs_)
@@ -100,7 +102,7 @@ class CommonsenseRNNCell(nn.Module):
         if self.listener_state:
             ## listener external state ##
             U_ = U.unsqueeze(1).expand(-1,qmask.size()[1],-1).contiguous().view(-1,self.D_m)
-            er_ = o2.unsqueeze(1).expand(-1, qmask.size()[1], -1).contiguous().view(-1, self.D_s)
+            er_ = o2.unsqueeze(1).expand(-1, qmask.size()[1], -1).contiguous().view(-1, self.D_s)   # o2: other reaction
             ss_ = self._select_parties(rs_, qm_idx).unsqueeze(1).\
                     expand(-1, qmask.size()[1], -1).contiguous().view(-1, self.D_r)
             U_er_ss_ = torch.cat([U_, er_, ss_], 1)
@@ -108,7 +110,7 @@ class CommonsenseRNNCell(nn.Module):
             # rl_ = self.dropout(rl_)
             
             ## listener internal state ##
-            es_ = o1.unsqueeze(1).expand(-1, qmask.size()[1], -1).contiguous().view(-1, self.D_s)
+            es_ = o1.unsqueeze(1).expand(-1, qmask.size()[1], -1).contiguous().view(-1, self.D_s)   # o1: other effect
             ss_ = self._select_parties(qs_, qm_idx).unsqueeze(1).\
                     expand(-1, qmask.size()[1], -1).contiguous().view(-1, self.D_p)
             es_ss_ = torch.cat([es_, ss_], 1)
@@ -133,11 +135,12 @@ class CommonsenseRNNCell(nn.Module):
         
         ## emotion ##        
         es_ = torch.cat([U, self._select_parties(q_, qm_idx), self._select_parties(r_, qm_idx), 
-                         self._select_parties(i_, qm_idx)], dim=1) 
+                         self._select_parties(i_, qm_idx)], dim=1)
+        # 这个应该是e_{t-1}
         e0 = torch.zeros(qmask.size()[0], self.D_e).type(U.type()) if e0.size()[0]==0\
                 else e0
         
-        if self.emo_gru:
+        if self.emo_gru:    # emo_gru = True
             e_ = self.e_cell(es_, e0)
         else:
             e_ = es_    
@@ -256,6 +259,7 @@ class CommonsenseGRUModel(nn.Module):
         return pad_sequence(xfs)
 
     def forward(self, r1, r2, r3, r4, x1, x2, x3, o1, o2, qmask, umask, att2=False, return_hidden=False):
+        # 代码 train_or_eval_model 中 att2=True
         """
         U -> seq_len, batch, D_m
         qmask -> seq_len, batch, party
@@ -265,17 +269,19 @@ class CommonsenseGRUModel(nn.Module):
 
         # default=3
         if self.norm_strategy == 1:
-            r1 = self.norm1a(r1.transpose(0, 1).reshape(-1, feature_dim)).reshape(-1, seq_len, feature_dim).transpose(1, 0)
-            r2 = self.norm1b(r2.transpose(0, 1).reshape(-1, feature_dim)).reshape(-1, seq_len, feature_dim).transpose(1, 0)
-            r3 = self.norm1c(r3.transpose(0, 1).reshape(-1, feature_dim)).reshape(-1, seq_len, feature_dim).transpose(1, 0)
-            r4 = self.norm1d(r4.transpose(0, 1).reshape(-1, feature_dim)).reshape(-1, seq_len, feature_dim).transpose(1, 0)
+            # r1 = self.norm1a(r1.transpose(0, 1).reshape(-1, feature_dim)).reshape(-1, seq_len, feature_dim).transpose(1, 0)
+            # r2 = self.norm1b(r2.transpose(0, 1).reshape(-1, feature_dim)).reshape(-1, seq_len, feature_dim).transpose(1, 0)
+            # r3 = self.norm1c(r3.transpose(0, 1).reshape(-1, feature_dim)).reshape(-1, seq_len, feature_dim).transpose(1, 0)
+            # r4 = self.norm1d(r4.transpose(0, 1).reshape(-1, feature_dim)).reshape(-1, seq_len, feature_dim).transpose(1, 0)
+            raise ValueError
 
         elif self.norm_strategy == 2:
-            norm2 = nn.LayerNorm((seq_len, feature_dim), elementwise_affine=False)
-            r1 = norm2(r1.transpose(0, 1)).transpose(0, 1)
-            r2 = norm2(r2.transpose(0, 1)).transpose(0, 1)
-            r3 = norm2(r3.transpose(0, 1)).transpose(0, 1)
-            r4 = norm2(r4.transpose(0, 1)).transpose(0, 1)
+            # norm2 = nn.LayerNorm((seq_len, feature_dim), elementwise_affine=False)
+            # r1 = norm2(r1.transpose(0, 1)).transpose(0, 1)
+            # r2 = norm2(r2.transpose(0, 1)).transpose(0, 1)
+            # r3 = norm2(r3.transpose(0, 1)).transpose(0, 1)
+            # r4 = norm2(r4.transpose(0, 1)).transpose(0, 1)
+            raise ValueError
 
         elif self.norm_strategy == 3:
             r1 = self.norm3a(r1.transpose(0, 1).reshape(-1, feature_dim)).reshape(-1, seq_len, feature_dim).transpose(1, 0)
@@ -283,22 +289,27 @@ class CommonsenseGRUModel(nn.Module):
             r3 = self.norm3c(r3.transpose(0, 1).reshape(-1, feature_dim)).reshape(-1, seq_len, feature_dim).transpose(1, 0)
             r4 = self.norm3d(r4.transpose(0, 1).reshape(-1, feature_dim)).reshape(-1, seq_len, feature_dim).transpose(1, 0)
 
+        # default=2
         if self.mode1 == 0:
-            r = torch.cat([r1, r2, r3, r4], axis=-1)
+            # r = torch.cat([r1, r2, r3, r4], axis=-1)
+            raise ValueError
         elif self.mode1 == 1:
-            r = torch.cat([r1, r2], axis=-1)
+            # r = torch.cat([r1, r2], axis=-1)
+            raise ValueError
         elif self.mode1 == 2:
             r = (r1 + r2 + r3 + r4)/4
-        elif self.mode1 == 3:
-            r = r1
-        elif self.mode1 == 4:
-            r = r2
-        elif self.mode1 == 5:
-            r = r3
-        elif self.mode1 == 6:
-            r = r4
-        elif self.mode1 == 7:
-            r = self.r_weights[0]*r1 + self.r_weights[1]*r2 + self.r_weights[2]*r3 + self.r_weights[3]*r4
+        # elif self.mode1 == 3:
+        #     r = r1
+        # elif self.mode1 == 4:
+        #     r = r2
+        # elif self.mode1 == 5:
+        #     r = r3
+        # elif self.mode1 == 6:
+        #     r = r4
+        # elif self.mode1 == 7:
+        #     r = self.r_weights[0]*r1 + self.r_weights[1]*r2 + self.r_weights[2]*r3 + self.r_weights[3]*r4
+        else:
+            raise ValueError
             
         r = self.linear_in(r)
         
@@ -320,6 +331,8 @@ class CommonsenseGRUModel(nn.Module):
         emotions = self.dropout_rec(emotions)
         
         alpha, alpha_f, alpha_b = [], [], []
+
+        # 代码 train_or_eval_model：  att2=True
         if att2:
             att_emotions = []
             alpha = []
