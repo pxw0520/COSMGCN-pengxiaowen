@@ -263,6 +263,7 @@ class CommonsenseGRUModel(nn.Module):
 
         seq_len, batch, feature_dim = r1.size()
 
+        # default=3
         if self.norm_strategy == 1:
             r1 = self.norm1a(r1.transpose(0, 1).reshape(-1, feature_dim)).reshape(-1, seq_len, feature_dim).transpose(1, 0)
             r2 = self.norm1b(r2.transpose(0, 1).reshape(-1, feature_dim)).reshape(-1, seq_len, feature_dim).transpose(1, 0)
