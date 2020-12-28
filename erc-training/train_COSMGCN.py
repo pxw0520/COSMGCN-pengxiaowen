@@ -48,9 +48,10 @@ def get_IEMOCAP_loaders(batch_size=32, num_workers=0, pin_memory=False):
 
 
 def train_or_eval_model(model, loss_function, dataloader, epoch, optimizer=None, train=False):
-    losses, preds, labels, masks, losses_sense = [], [], [], [], []
-    alphas, alphas_f, alphas_b, vids = [], [], [], []
-    max_sequence_len = []
+    losses, preds, labels = [], [], []
+    scores, vids = [], []
+
+    ei, et, en, el = torch.empty(0).type(torch.LongTensor), torch.empty(0).type(torch.LongTensor), torch.empty(0), []
 
     assert not train or optimizer != None
     if train:
@@ -74,45 +75,42 @@ def train_or_eval_model(model, loss_function, dataloader, epoch, optimizer=None,
         label = torch.cat([label[j][:lengths[j]] for j in range(len(label))])
         loss = loss_function(log_prob, label)
 
+        ei = torch.cat([ei, e_i], dim=1)
+        et = torch.cat([et, e_t])
+        en = torch.cat([en, e_n])
+        el += e_l
 
-        lp_ = log_prob.transpose(0, 1).contiguous().view(-1, log_prob.size()[2])  # batch*seq_len, n_classes
-        labels_ = label.view(-1)  # batch*seq_len
-        loss = loss_function(lp_, labels_, umask)
-
-        pred_ = torch.argmax(lp_, 1)  # batch*seq_len
-        preds.append(pred_.data.cpu().numpy())
-        labels.append(labels_.data.cpu().numpy())
-        masks.append(umask.view(-1).cpu().numpy())
-        losses.append(loss.item() * masks[-1].sum())
+        preds.append(torch.argmax(log_prob, 1).cpu().numpy())
+        labels.append(label.cpu().numpy())
+        losses.append(loss.item())
 
         if train:
-            total_loss = loss
-            total_loss.backward()
+            loss.backward()
             if args.tensorboard:
                 for param in model.named_parameters():
                     writer.add_histogram(param[0], param[1].grad, epoch)
             optimizer.step()
-        else:
-            alphas += alpha
-            alphas_f += alpha_f
-            alphas_b += alpha_b
-            vids += data[-1]
 
     if preds != []:
         preds = np.concatenate(preds)
         labels = np.concatenate(labels)
-        masks = np.concatenate(masks)
     else:
-        return float('nan'), float('nan'), float('nan'), [], [], [], float('nan'), []
+        return float('nan'), float('nan'), [], [], float('nan'), [], [], [], [], []
 
-    avg_loss = round(np.sum(losses) / np.sum(masks), 4)
-    avg_sense_loss = round(np.sum(losses_sense) / np.sum(masks), 4)
+    vids += data[-1]
+    ei = ei.data.cpu().numpy()
+    et = et.data.cpu().numpy()
+    en = en.data.cpu().numpy()
+    el = np.array(el)
+    labels = np.array(labels)
+    preds = np.array(preds)
+    vids = np.array(vids)
 
-    avg_accuracy = round(accuracy_score(labels, preds, sample_weight=masks) * 100, 2)
-    avg_fscore = round(f1_score(labels, preds, sample_weight=masks, average='weighted') * 100, 2)
+    avg_loss = round(np.sum(losses) / len(losses), 4)
+    avg_accuracy = round(accuracy_score(labels, preds) * 100, 2)
+    avg_fscore = round(f1_score(labels, preds, average='weighted') * 100, 2)
 
-    return avg_loss, avg_accuracy, labels, preds, masks, [avg_fscore], [alphas, alphas_f, alphas_b, vids]
-
+    return avg_loss, avg_accuracy, labels, preds, avg_fscore, vids, ei, et, en, el
 
 if __name__ == '__main__':
 
@@ -197,7 +195,8 @@ if __name__ == '__main__':
     if args.class_weight:
         loss_function = MaskedNLLLoss(loss_weights.cuda() if cuda else loss_weights)
     else:
-        loss_function = MaskedNLLLoss()
+        # loss_function = MaskedNLLLoss()   # fixme
+        loss_function = nn.NLLLoss()
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2)
 
@@ -212,10 +211,10 @@ if __name__ == '__main__':
 
     for e in range(n_epochs):
         start_time = time.time()
-        train_loss, train_acc, _, _, _, train_fscore, _ = train_or_eval_model(model, loss_function, train_loader, e,
+        train_loss, train_acc, _, _, train_fscore, _, _, _, _, _ = train_or_eval_model(model, loss_function, train_loader, e,
                                                                               optimizer, True)
-        valid_loss, valid_acc, _, _, _, valid_fscore, _ = train_or_eval_model(model, loss_function, valid_loader, e)
-        test_loss, test_acc, test_label, test_pred, test_mask, test_fscore, attentions = train_or_eval_model(model,
+        valid_loss, valid_acc, _, _, valid_fscore, _, _, _, _, _ = train_or_eval_model(model, loss_function, valid_loader, e)
+        test_loss, test_acc, test_label, test_pred, test_fscore, _, _, _, _, _ = train_or_eval_model(model,
                                                                                                              loss_function,
                                                                                                              test_loader,
                                                                                                              e)

@@ -536,7 +536,6 @@ class CommonsenseGCN(nn.Module):
                                   self.avec)
         # --------------------------------------------------
 
-        alpha, alpha_f, alpha_b = [], [], []
 
         return log_prob, edge_index, edge_norm, edge_type, edge_index_lengths
 
