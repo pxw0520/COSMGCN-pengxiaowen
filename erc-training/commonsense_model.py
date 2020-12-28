@@ -244,6 +244,13 @@ class CommonsenseGRUModel(nn.Module):
         self.linear     = nn.Linear(2*D_e, D_h)
         self.smax_fc    = nn.Linear(D_h, n_classes)
 
+        # add
+        self.linear_emotion = nn.Linear(6 * D_i, 200)
+
+        max_seq_len = 110
+        self.no_cuda = True
+        self.att_model = MaskedEdgeAttention(2 * D_e, max_seq_len, self.no_cuda)
+
     def _reverse_seq(self, X, mask):
         """
         X -> seq_len, batch, dim
@@ -311,7 +318,7 @@ class CommonsenseGRUModel(nn.Module):
         else:
             raise ValueError
             
-        r = self.linear_in(r)
+        r = self.linear_in(r)   # in1024  out100
         
         emotions_f, alpha_f = self.cs_rnn_f(r, x1, x2, x3, o1, o2, qmask)
         
@@ -329,6 +336,33 @@ class CommonsenseGRUModel(nn.Module):
         
         emotions = torch.cat([emotions_f,emotions_b],dim=-1)
         emotions = self.dropout_rec(emotions)
+<<<<<<< Updated upstream
+=======
+
+        # --------------------------------------------------
+        '''这里加GCN / FC: '''
+        # emotions = self.linear_emotion(emotions)  # 900 -> 200
+
+        self.window_past = 10
+        self.window_future = 10
+        n_speakers = 2
+        edge_type_mapping = {}
+        for j in range(n_speakers):
+            for k in range(n_speakers):
+                edge_type_mapping[str(j) + str(k) + '0'] = len(edge_type_mapping)
+                edge_type_mapping[str(j) + str(k) + '1'] = len(edge_type_mapping)
+
+        self.edge_type_mapping = edge_type_mapping
+        # self.att_model = MaskedEdgeAttention(2 * D_e, max_seq_len, self.no_cuda)
+        lengths = [(umask[j] == 1).nonzero().tolist()[-1][0] + 1 for j in range(len(umask))]
+        features, edge_index, edge_norm, edge_type, edge_index_lengths = batch_graphify(emotions, qmask, lengths,
+                                                                                        self.window_past,
+                                                                                        self.window_future,
+                                                                                        self.edge_type_mapping,
+                                                                                        self.att_model, self.no_cuda)
+
+        #--------------------------------------------------
+>>>>>>> Stashed changes
         
         alpha, alpha_f, alpha_b = [], [], []
 
@@ -355,5 +389,184 @@ class CommonsenseGRUModel(nn.Module):
         if return_hidden:
             return hidden, alpha, alpha_f, alpha_b, emotions
         return log_prob, out_sense, alpha, alpha_f, alpha_b, emotions
-    
-    
+
+
+def batch_graphify(features, qmask, lengths, window_past, window_future, edge_type_mapping, att_model, no_cuda):
+    """
+    Method to prepare the data format required for the GCN network. Pytorch geometric puts all nodes for classification
+    in one single graph. Following this, we create a single graph for a mini-batch of dialogue instances. This method
+    ensures that the various graph indexing is properly carried out so as to make sure that, utterances (nodes) from
+    each dialogue instance will have edges with utterances in that same dialogue instance, but not with utternaces
+    from any other dialogue instances in that mini-batch.
+    """
+
+    edge_index, edge_norm, edge_type, node_features = [], [], [], []
+    batch_size = features.size(1)
+    length_sum = 0
+    edge_ind = []
+    edge_index_lengths = []
+
+    for j in range(batch_size):
+        edge_ind.append(edge_perms(lengths[j], window_past, window_future))
+
+    # scores are the edge weights
+    scores = att_model(features, lengths, edge_ind)
+
+    for j in range(batch_size):
+        node_features.append(features[:lengths[j], j, :])
+
+        perms1 = edge_perms(lengths[j], window_past, window_future)
+        perms2 = [(item[0] + length_sum, item[1] + length_sum) for item in perms1]
+        length_sum += lengths[j]
+
+        edge_index_lengths.append(len(perms1))
+
+        for item1, item2 in zip(perms1, perms2):
+            edge_index.append(torch.tensor([item2[0], item2[1]]))
+            edge_norm.append(scores[j, item1[0], item1[1]])
+
+            speaker0 = (qmask[item1[0], j, :] == 1).nonzero()[0][0].tolist()
+            speaker1 = (qmask[item1[1], j, :] == 1).nonzero()[0][0].tolist()
+
+            if item1[0] < item1[1]:
+                # edge_type.append(0) # ablation by removing speaker dependency: only 2 relation types
+                # edge_type.append(edge_type_mapping[str(speaker0) + str(speaker1) + '0']) # ablation by removing temporal dependency: M^2 relation types
+                edge_type.append(edge_type_mapping[str(speaker0) + str(speaker1) + '0'])
+            else:
+                # edge_type.append(1) # ablation by removing speaker dependency: only 2 relation types
+                # edge_type.append(edge_type_mapping[str(speaker0) + str(speaker1) + '0']) # ablation by removing temporal dependency: M^2 relation types
+                edge_type.append(edge_type_mapping[str(speaker0) + str(speaker1) + '1'])
+
+    node_features = torch.cat(node_features, dim=0)
+    edge_index = torch.stack(edge_index).transpose(0, 1)
+    edge_norm = torch.stack(edge_norm)
+    edge_type = torch.tensor(edge_type)
+
+    # if torch.cuda.is_available():
+    if not no_cuda:
+        node_features = node_features.cuda()
+        edge_index = edge_index.cuda()
+        edge_norm = edge_norm.cuda()
+        edge_type = edge_type.cuda()
+
+    return node_features, edge_index, edge_norm, edge_type, edge_index_lengths
+
+
+def edge_perms(l, window_past, window_future):
+    """
+    Method to construct the edges considering the past and future window.
+    """
+
+    all_perms = set()
+    array = np.arange(l)
+    for j in range(l):
+        perms = set()
+
+        if window_past == -1 and window_future == -1:
+            eff_array = array
+        elif window_past == -1:
+            eff_array = array[:min(l, j + window_future + 1)]
+        elif window_future == -1:
+            eff_array = array[max(0, j - window_past):]
+        else:
+            eff_array = array[max(0, j - window_past):min(l, j + window_future + 1)]
+
+        for item in eff_array:
+            perms.add((j, item))
+        all_perms = all_perms.union(perms)
+    return list(all_perms)
+
+
+class MaskedEdgeAttention(nn.Module):
+
+    def __init__(self, input_dim, max_seq_len, no_cuda):
+        """
+        Method to compute the edge weights, as in Equation 1. in the paper.
+        attn_type = 'attn1' refers to the equation in the paper.
+        For slightly different attention mechanisms refer to attn_type = 'attn2' or attn_type = 'attn3'
+        """
+
+        super(MaskedEdgeAttention, self).__init__()
+
+        self.input_dim = input_dim
+        self.max_seq_len = max_seq_len
+        self.scalar = nn.Linear(self.input_dim, self.max_seq_len, bias=False)
+        self.matchatt = MatchingAttention(self.input_dim, self.input_dim, att_type='general2')
+        self.simpleatt = SimpleAttention(self.input_dim)
+        self.att = Attention(self.input_dim, score_function='mlp')
+        self.no_cuda = no_cuda
+
+    def forward(self, M, lengths, edge_ind):
+        """
+        M -> (seq_len, batch, vector)
+        lengths -> length of the sequences in the batch
+        """
+        attn_type = 'attn1'
+
+        if attn_type == 'attn1':
+
+            scale = self.scalar(M)
+            # scale = torch.tanh(scale)
+            alpha = F.softmax(scale, dim=0).permute(1, 2, 0)
+
+            # if torch.cuda.is_available():
+            if not self.no_cuda:
+                mask = Variable(torch.ones(alpha.size()) * 1e-10).detach().cuda()
+                mask_copy = Variable(torch.zeros(alpha.size())).detach().cuda()
+
+            else:
+                mask = Variable(torch.ones(alpha.size()) * 1e-10).detach()
+                mask_copy = Variable(torch.zeros(alpha.size())).detach()
+
+            edge_ind_ = []
+            for i, j in enumerate(edge_ind):
+                for x in j:
+                    edge_ind_.append([i, x[0], x[1]])
+
+            edge_ind_ = np.array(edge_ind_).transpose()
+            mask[edge_ind_] = 1
+            mask_copy[edge_ind_] = 1
+            masked_alpha = alpha * mask
+            _sums = masked_alpha.sum(-1, keepdim=True)
+            scores = masked_alpha.div(_sums) * mask_copy
+            return scores
+
+        elif attn_type == 'attn2':
+            scores = torch.zeros(M.size(1), self.max_seq_len, self.max_seq_len, requires_grad=True)
+
+            # if torch.cuda.is_available():
+            if not self.no_cuda:
+                scores = scores.cuda()
+
+            for j in range(M.size(1)):
+
+                ei = np.array(edge_ind[j])
+
+                for node in range(lengths[j]):
+                    neighbour = ei[ei[:, 0] == node, 1]
+
+                    M_ = M[neighbour, j, :].unsqueeze(1)
+                    t = M[node, j, :].unsqueeze(0)
+                    _, alpha_ = self.simpleatt(M_, t)
+                    scores[j, node, neighbour] = alpha_
+
+        elif attn_type == 'attn3':
+            scores = torch.zeros(M.size(1), self.max_seq_len, self.max_seq_len, requires_grad=True)
+
+            # if torch.cuda.is_available():
+            if not self.no_cuda:
+                scores = scores.cuda()
+
+            for j in range(M.size(1)):
+
+                ei = np.array(edge_ind[j])
+
+                for node in range(lengths[j]):
+                    neighbour = ei[ei[:, 0] == node, 1]
+
+                    M_ = M[neighbour, j, :].unsqueeze(1).transpose(0, 1)
+                    t = M[node, j, :].unsqueeze(0).unsqueeze(0).repeat(len(neighbour), 1, 1).transpose(0, 1)
+                    _, alpha_ = self.att(M_, t)
+                    scores[j, node, neighbour] = alpha_[0, :, 0]
+
+        return scores
