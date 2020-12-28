@@ -212,7 +212,7 @@ class CommonsenseGRUModel(nn.Module):
             D_x = 4 * D_m
         elif mode1 == 1:
             D_x = 2 * D_m
-        else:
+        else:   # default = 2
             D_x = D_m
 
         self.mode1 = mode1
@@ -264,6 +264,16 @@ class CommonsenseGRUModel(nn.Module):
         U -> seq_len, batch, D_m
         qmask -> seq_len, batch, party
         """
+        """
+        U -> batch, D_m
+        x1, x2, x3, o1, o2 -> batch, D_m
+        x1 -> effect on self; x2 -> reaction of self; x3 -> intent of self
+        o1 -> effect on others; o2 -> reaction of others
+        qmask -> batch, party       # 用户是谁
+        g_hist -> t-1, batch, D_g  g_hist: i_{A,t-1}
+        q0 -> batch, party, D_p
+        e0 -> batch, self.D_e
+        """
 
         seq_len, batch, feature_dim = r1.size()
 
@@ -283,7 +293,7 @@ class CommonsenseGRUModel(nn.Module):
             # r4 = norm2(r4.transpose(0, 1)).transpose(0, 1)
             raise ValueError
 
-        elif self.norm_strategy == 3:
+        elif self.norm_strategy == 3:   # roberta1~4
             r1 = self.norm3a(r1.transpose(0, 1).reshape(-1, feature_dim)).reshape(-1, seq_len, feature_dim).transpose(1, 0)
             r2 = self.norm3b(r2.transpose(0, 1).reshape(-1, feature_dim)).reshape(-1, seq_len, feature_dim).transpose(1, 0)
             r3 = self.norm3c(r3.transpose(0, 1).reshape(-1, feature_dim)).reshape(-1, seq_len, feature_dim).transpose(1, 0)
@@ -329,6 +339,8 @@ class CommonsenseGRUModel(nn.Module):
         
         emotions = torch.cat([emotions_f,emotions_b],dim=-1)
         emotions = self.dropout_rec(emotions)
+
+        # 这里加GCN / FC
         
         alpha, alpha_f, alpha_b = [], [], []
 
