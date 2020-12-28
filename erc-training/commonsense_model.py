@@ -336,8 +336,7 @@ class CommonsenseGRUModel(nn.Module):
         
         emotions = torch.cat([emotions_f,emotions_b],dim=-1)
         emotions = self.dropout_rec(emotions)
-<<<<<<< Updated upstream
-=======
+
 
         # --------------------------------------------------
         '''这里加GCN / FC: '''
@@ -362,7 +361,7 @@ class CommonsenseGRUModel(nn.Module):
                                                                                         self.att_model, self.no_cuda)
 
         #--------------------------------------------------
->>>>>>> Stashed changes
+
         
         alpha, alpha_f, alpha_b = [], [], []
 
