@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 from torch.nn.utils.rnn import pad_sequence
+from torch_geometric.nn import RGCNConv, GraphConv
 import numpy as np, itertools, random, copy, math
 from model import SimpleAttention, MatchingAttention, Attention
 
@@ -244,13 +245,6 @@ class CommonsenseGRUModel(nn.Module):
         self.linear     = nn.Linear(2*D_e, D_h)
         self.smax_fc    = nn.Linear(D_h, n_classes)
 
-        # add
-        self.linear_emotion = nn.Linear(6 * D_i, 200)
-
-        max_seq_len = 110
-        self.no_cuda = True
-        self.att_model = MaskedEdgeAttention(2 * D_e, max_seq_len, self.no_cuda)
-
     def _reverse_seq(self, X, mask):
         """
         X -> seq_len, batch, dim
@@ -336,32 +330,6 @@ class CommonsenseGRUModel(nn.Module):
         
         emotions = torch.cat([emotions_f,emotions_b],dim=-1)
         emotions = self.dropout_rec(emotions)
-
-
-        # --------------------------------------------------
-        '''这里加GCN / FC: '''
-        # emotions = self.linear_emotion(emotions)  # 900 -> 200
-
-        self.window_past = 10
-        self.window_future = 10
-        n_speakers = 2
-        edge_type_mapping = {}
-        for j in range(n_speakers):
-            for k in range(n_speakers):
-                edge_type_mapping[str(j) + str(k) + '0'] = len(edge_type_mapping)
-                edge_type_mapping[str(j) + str(k) + '1'] = len(edge_type_mapping)
-
-        self.edge_type_mapping = edge_type_mapping
-        # self.att_model = MaskedEdgeAttention(2 * D_e, max_seq_len, self.no_cuda)
-        lengths = [(umask[j] == 1).nonzero().tolist()[-1][0] + 1 for j in range(len(umask))]
-        features, edge_index, edge_norm, edge_type, edge_index_lengths = batch_graphify(emotions, qmask, lengths,
-                                                                                        self.window_past,
-                                                                                        self.window_future,
-                                                                                        self.edge_type_mapping,
-                                                                                        self.att_model, self.no_cuda)
-
-        #--------------------------------------------------
-
         
         alpha, alpha_f, alpha_b = [], [], []
 
@@ -385,11 +353,197 @@ class CommonsenseGRUModel(nn.Module):
         
         log_prob = F.log_softmax(self.smax_fc(hidden), 2)
 
-        if return_hidden:
+        if return_hidden:   # False
             return hidden, alpha, alpha_f, alpha_b, emotions
         return log_prob, out_sense, alpha, alpha_f, alpha_b, emotions
 
 
+'''----------------------------------------CommonsenseGCN---------------------------------------------------------------'''
+'''----------------------------------------CommonsenseGCN---------------------------------------------------------------'''
+'''----------------------------------------CommonsenseGCN---------------------------------------------------------------'''
+class CommonsenseGCN(nn.Module):
+
+    def __init__(self, D_m, D_s, D_g, D_p, D_r, D_i, D_e, D_h, D_a=100, n_classes=7, listener_state=False,
+                 context_attention='simple', dropout_rec=0.5, dropout=0.1, emo_gru=True, mode1=0, norm=0,
+                 residual=False):
+
+        super(CommonsenseGCN, self).__init__()
+
+        if mode1 == 0:
+            D_x = 4 * D_m
+        elif mode1 == 1:
+            D_x = 2 * D_m
+        else:
+            D_x = D_m
+
+        self.mode1 = mode1
+        self.norm_strategy = norm
+        self.linear_in = nn.Linear(D_x, D_h)
+        self.residual = residual
+
+        self.r_weights = nn.Parameter(torch.tensor([0.25, 0.25, 0.25, 0.25]))
+
+        norm_train = True
+        self.norm1a = nn.LayerNorm(D_m, elementwise_affine=norm_train)
+        self.norm1b = nn.LayerNorm(D_m, elementwise_affine=norm_train)
+        self.norm1c = nn.LayerNorm(D_m, elementwise_affine=norm_train)
+        self.norm1d = nn.LayerNorm(D_m, elementwise_affine=norm_train)
+
+        self.norm3a = nn.BatchNorm1d(D_m, affine=norm_train)
+        self.norm3b = nn.BatchNorm1d(D_m, affine=norm_train)
+        self.norm3c = nn.BatchNorm1d(D_m, affine=norm_train)
+        self.norm3d = nn.BatchNorm1d(D_m, affine=norm_train)
+
+        self.dropout = nn.Dropout(dropout)
+        self.dropout_rec = nn.Dropout(dropout_rec)
+        self.cs_rnn_f = CommonsenseRNN(D_h, D_s, D_g, D_p, D_r, D_i, D_e, listener_state,
+                                       context_attention, D_a, dropout_rec, emo_gru)
+        self.cs_rnn_r = CommonsenseRNN(D_h, D_s, D_g, D_p, D_r, D_i, D_e, listener_state,
+                                       context_attention, D_a, dropout_rec, emo_gru)
+        self.sense_gru = nn.GRU(input_size=D_s, hidden_size=D_s // 2, num_layers=1, bidirectional=True)
+        self.matchatt = MatchingAttention(2 * D_e, 2 * D_e, att_type='general2')
+        self.linear = nn.Linear(2 * D_e, D_h)
+        self.smax_fc = nn.Linear(D_h, n_classes)
+
+        # -----------------------------------------------add
+        self.linear_emotion = nn.Linear(6 * D_i, 200)
+
+        max_seq_len = 110
+        self.no_cuda = True
+        self.att_model = MaskedEdgeAttention(2 * D_e, max_seq_len, self.no_cuda)
+
+        self.window_past = 10
+        self.window_future = 10
+        n_speakers = 2
+        edge_type_mapping = {}
+        for j in range(n_speakers):
+            for k in range(n_speakers):
+                edge_type_mapping[str(j) + str(k) + '0'] = len(edge_type_mapping)
+                edge_type_mapping[str(j) + str(k) + '1'] = len(edge_type_mapping)
+
+        self.edge_type_mapping = edge_type_mapping
+
+        n_relations = 2 * n_speakers ** 2
+        graph_hidden_size = 100
+        self.graph_net = GraphNetwork(2 * D_e, n_classes, n_relations, max_seq_len, graph_hidden_size, dropout,
+                                      self.no_cuda)
+        self.nodal_attention = True
+        self.avec = False
+
+    def _reverse_seq(self, X, mask):
+        """
+        X -> seq_len, batch, dim
+        mask -> batch, seq_len
+        """
+        X_ = X.transpose(0, 1)
+        mask_sum = torch.sum(mask, 1).int()
+
+        xfs = []
+        for x, c in zip(X_, mask_sum):
+            xf = torch.flip(x[:c], [0])
+            xfs.append(xf)
+        return pad_sequence(xfs)
+
+    def forward(self, r1, r2, r3, r4, x1, x2, x3, o1, o2, qmask, umask, att2=False, return_hidden=False):
+        # 代码 train_or_eval_model 中 att2=True
+        """
+        U -> seq_len, batch, D_m
+        qmask -> seq_len, batch, party
+        """
+
+        seq_len, batch, feature_dim = r1.size()
+
+        # default=3
+        if self.norm_strategy == 1:
+            # r1 = self.norm1a(r1.transpose(0, 1).reshape(-1, feature_dim)).reshape(-1, seq_len, feature_dim).transpose(1, 0)
+            # r2 = self.norm1b(r2.transpose(0, 1).reshape(-1, feature_dim)).reshape(-1, seq_len, feature_dim).transpose(1, 0)
+            # r3 = self.norm1c(r3.transpose(0, 1).reshape(-1, feature_dim)).reshape(-1, seq_len, feature_dim).transpose(1, 0)
+            # r4 = self.norm1d(r4.transpose(0, 1).reshape(-1, feature_dim)).reshape(-1, seq_len, feature_dim).transpose(1, 0)
+            raise ValueError
+
+        elif self.norm_strategy == 2:
+            # norm2 = nn.LayerNorm((seq_len, feature_dim), elementwise_affine=False)
+            # r1 = norm2(r1.transpose(0, 1)).transpose(0, 1)
+            # r2 = norm2(r2.transpose(0, 1)).transpose(0, 1)
+            # r3 = norm2(r3.transpose(0, 1)).transpose(0, 1)
+            # r4 = norm2(r4.transpose(0, 1)).transpose(0, 1)
+            raise ValueError
+
+        elif self.norm_strategy == 3:
+            r1 = self.norm3a(r1.transpose(0, 1).reshape(-1, feature_dim)).reshape(-1, seq_len, feature_dim).transpose(1,
+                                                                                                                      0)
+            r2 = self.norm3b(r2.transpose(0, 1).reshape(-1, feature_dim)).reshape(-1, seq_len, feature_dim).transpose(1,
+                                                                                                                      0)
+            r3 = self.norm3c(r3.transpose(0, 1).reshape(-1, feature_dim)).reshape(-1, seq_len, feature_dim).transpose(1,
+                                                                                                                      0)
+            r4 = self.norm3d(r4.transpose(0, 1).reshape(-1, feature_dim)).reshape(-1, seq_len, feature_dim).transpose(1,
+                                                                                                                      0)
+
+        # default=2
+        if self.mode1 == 0:
+            # r = torch.cat([r1, r2, r3, r4], axis=-1)
+            raise ValueError
+        elif self.mode1 == 1:
+            # r = torch.cat([r1, r2], axis=-1)
+            raise ValueError
+        elif self.mode1 == 2:
+            r = (r1 + r2 + r3 + r4) / 4
+        # elif self.mode1 == 3:
+        #     r = r1
+        # elif self.mode1 == 4:
+        #     r = r2
+        # elif self.mode1 == 5:
+        #     r = r3
+        # elif self.mode1 == 6:
+        #     r = r4
+        # elif self.mode1 == 7:
+        #     r = self.r_weights[0]*r1 + self.r_weights[1]*r2 + self.r_weights[2]*r3 + self.r_weights[3]*r4
+        else:
+            raise ValueError
+
+        r = self.linear_in(r)  # in1024  out100
+
+        emotions_f, alpha_f = self.cs_rnn_f(r, x1, x2, x3, o1, o2, qmask)
+
+        out_sense, _ = self.sense_gru(x1)
+
+        rev_r = self._reverse_seq(r, umask)
+        rev_x1 = self._reverse_seq(x1, umask)
+        rev_x2 = self._reverse_seq(x2, umask)
+        rev_x3 = self._reverse_seq(x3, umask)
+        rev_o1 = self._reverse_seq(o1, umask)
+        rev_o2 = self._reverse_seq(o2, umask)
+        rev_qmask = self._reverse_seq(qmask, umask)
+        emotions_b, alpha_b = self.cs_rnn_r(rev_r, rev_x1, rev_x2, rev_x3, rev_o1, rev_o2, rev_qmask)
+        emotions_b = self._reverse_seq(emotions_b, umask)
+
+        emotions = torch.cat([emotions_f, emotions_b], dim=-1)
+        emotions = self.dropout_rec(emotions)
+
+        # --------------------------------------------------
+        '''这里加GCN / FC: '''
+        # emotions = self.linear_emotion(emotions)  # 900 -> 200
+
+        # self.att_model = MaskedEdgeAttention(2 * D_e, max_seq_len, self.no_cuda)
+        seq_lengths = [(umask[j] == 1).nonzero().tolist()[-1][0] + 1 for j in range(len(umask))]
+        features, edge_index, edge_norm, edge_type, edge_index_lengths = batch_graphify(emotions, qmask, seq_lengths,
+                                                                                        self.window_past,
+                                                                                        self.window_future,
+                                                                                        self.edge_type_mapping,
+                                                                                        self.att_model, self.no_cuda)
+
+        log_prob = self.graph_net(features, edge_index, edge_norm, edge_type, seq_lengths, umask, self.nodal_attention,
+                                  self.avec)
+        # --------------------------------------------------
+
+        alpha, alpha_f, alpha_b = [], [], []
+
+        return log_prob, edge_index, edge_norm, edge_type, edge_index_lengths
+
+'''----------------------------------------GCN Function---------------------------------------------------------------'''
+'''----------------------------------------GCN Function---------------------------------------------------------------'''
+'''----------------------------------------GCN Function---------------------------------------------------------------'''
+'''----------------------------------------GCN Function---------------------------------------------------------------'''
 def batch_graphify(features, qmask, lengths, window_past, window_future, edge_type_mapping, att_model, no_cuda):
     """
     Method to prepare the data format required for the GCN network. Pytorch geometric puts all nodes for classification
@@ -569,3 +723,115 @@ class MaskedEdgeAttention(nn.Module):
                     scores[j, node, neighbour] = alpha_[0, :, 0]
 
         return scores
+
+
+class GraphNetwork(torch.nn.Module):
+    def __init__(self, num_features, num_classes, num_relations, max_seq_len, hidden_size=64, dropout=0.5,
+                 no_cuda=False):
+        """
+        The Speaker-level context encoder in the form of a 2 layer GCN.
+        """
+        super(GraphNetwork, self).__init__()
+
+        self.conv1 = RGCNConv(num_features, hidden_size, num_relations, num_bases=30)
+        self.conv2 = GraphConv(hidden_size, hidden_size)
+        self.matchatt = MatchingAttention(num_features + hidden_size, num_features + hidden_size, att_type='general2')
+        self.linear = nn.Linear(num_features + hidden_size, hidden_size)
+        self.dropout = nn.Dropout(dropout)
+        self.smax_fc = nn.Linear(hidden_size, num_classes)
+        self.no_cuda = no_cuda
+
+    def forward(self, x, edge_index, edge_norm, edge_type, seq_lengths, umask, nodal_attn, avec):
+        out = self.conv1(x, edge_index, edge_type, edge_norm)
+        out = self.conv2(out, edge_index)
+        emotions = torch.cat([x, out], dim=-1)
+        log_prob = classify_node_features(emotions, seq_lengths, umask, self.matchatt, self.linear, self.dropout,
+                                          self.smax_fc, nodal_attn, avec, self.no_cuda)
+        return log_prob
+
+
+def classify_node_features(emotions, seq_lengths, umask, matchatt_layer, linear_layer, dropout_layer, smax_fc_layer, nodal_attn, avec, no_cuda):
+    """
+    Function for the final classification, as in Equation 7, 8, 9. in the paper.
+    """
+
+    if nodal_attn:
+
+        emotions = attentive_node_features(emotions, seq_lengths, umask, matchatt_layer, no_cuda)
+        hidden = F.relu(linear_layer(emotions))
+        hidden = dropout_layer(hidden)
+        hidden = smax_fc_layer(hidden)
+
+        if avec:
+            return torch.cat([hidden[:, j, :][:seq_lengths[j]] for j in range(len(seq_lengths))])
+
+        log_prob = F.log_softmax(hidden, 2)
+        log_prob = torch.cat([log_prob[:, j, :][:seq_lengths[j]] for j in range(len(seq_lengths))])
+        return log_prob
+
+    else:
+
+        hidden = F.relu(linear_layer(emotions))
+        hidden = dropout_layer(hidden)
+        hidden = smax_fc_layer(hidden)
+
+        if avec:
+            return hidden
+
+        log_prob = F.log_softmax(hidden, 1)
+        return log_prob
+
+
+def attentive_node_features(emotions, seq_lengths, umask, matchatt_layer, no_cuda):
+    """
+    Method to obtain attentive node features over the graph convoluted features, as in Equation 4, 5, 6. in the paper.
+    """
+
+    input_conversation_length = torch.tensor(seq_lengths)
+    start_zero = input_conversation_length.data.new(1).zero_()
+
+    # if torch.cuda.is_available():
+    if not no_cuda:
+        input_conversation_length = input_conversation_length.cuda()
+        start_zero = start_zero.cuda()
+
+    max_len = max(seq_lengths)
+
+    start = torch.cumsum(torch.cat((start_zero, input_conversation_length[:-1])), 0)
+
+    emotions = torch.stack([pad(emotions.narrow(0, s, l), max_len, no_cuda)
+                            for s, l in zip(start.data.tolist(),
+                                            input_conversation_length.data.tolist())], 0).transpose(0, 1)
+
+    alpha, alpha_f, alpha_b = [], [], []
+    att_emotions = []
+
+    for t in emotions:
+        att_em, alpha_ = matchatt_layer(emotions, t, mask=umask)
+        att_emotions.append(att_em.unsqueeze(0))
+        alpha.append(alpha_[:, 0, :])
+
+    att_emotions = torch.cat(att_emotions, dim=0)
+
+    return att_emotions
+
+def pad(tensor, length, no_cuda):
+    if isinstance(tensor, Variable):
+        var = tensor
+        if length > var.size(0):
+            #if torch.cuda.is_available():
+            if not no_cuda:
+                return torch.cat([var, torch.zeros(length - var.size(0), *var.size()[1:]).cuda()])
+            else:
+                return torch.cat([var, torch.zeros(length - var.size(0), *var.size()[1:])])
+        else:
+            return var
+    else:
+        if length > tensor.size(0):
+            #if torch.cuda.is_available():
+            if not no_cuda:
+                return torch.cat([tensor, torch.zeros(length - tensor.size(0), *tensor.size()[1:]).cuda()])
+            else:
+                return torch.cat([tensor, torch.zeros(length - tensor.size(0), *tensor.size()[1:])])
+        else:
+            return tensor
