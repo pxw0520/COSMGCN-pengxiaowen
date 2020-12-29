@@ -180,7 +180,7 @@ if __name__ == '__main__':
                                 norm=args.norm,
                                 residual=args.residual)
 
-    print('IEMOCAP COSMIC Model.')
+    print('IEMOCAP COSMGCN Model.')
 
     if cuda:
         model.cuda()
@@ -200,7 +200,7 @@ if __name__ == '__main__':
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2)
 
-    lf = open('logs/cosmic_iemocap_logs.txt', 'a')
+    lf = open('logs/cosmgcn_iemocap_logs.txt', 'a')
 
     train_loader, valid_loader, test_loader = get_IEMOCAP_loaders(batch_size=batch_size,
                                                                   num_workers=0)
@@ -250,6 +250,6 @@ if __name__ == '__main__':
     print('@Best Valid Loss: {}'.format(score1))
     print('@Best Valid F1: {}'.format(score2))
 
-    rf = open('results/cosmic_iemocap_results.txt', 'a')
+    rf = open('results/cosmgcn_iemocap_results.txt', 'a')
     rf.write('\t'.join(scores) + '\t' + str(args) + '\n')
     rf.close()
