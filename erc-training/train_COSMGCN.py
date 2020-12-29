@@ -110,7 +110,7 @@ def train_or_eval_model(model, loss_function, dataloader, epoch, optimizer=None,
     avg_accuracy = round(accuracy_score(labels, preds) * 100, 2)
     avg_fscore = round(f1_score(labels, preds, average='weighted') * 100, 2)
 
-    return avg_loss, avg_accuracy, labels, preds, avg_fscore, vids, ei, et, en, el
+    return avg_loss, avg_accuracy, labels, preds, [avg_fscore], vids, ei, et, en, el
 
 if __name__ == '__main__':
 
