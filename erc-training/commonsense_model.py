@@ -299,22 +299,12 @@ class CommonsenseGRUModel(nn.Module):
             raise ValueError
         elif self.mode1 == 2:
             r = (r1 + r2 + r3 + r4)/4
-        # elif self.mode1 == 3:
-        #     r = r1
-        # elif self.mode1 == 4:
-        #     r = r2
-        # elif self.mode1 == 5:
-        #     r = r3
-        # elif self.mode1 == 6:
-        #     r = r4
-        # elif self.mode1 == 7:
-        #     r = self.r_weights[0]*r1 + self.r_weights[1]*r2 + self.r_weights[2]*r3 + self.r_weights[3]*r4
         else:
             raise ValueError
             
         r = self.linear_in(r)   # in1024  out100
         
-        emotions_f, alpha_f = self.cs_rnn_f(r, x1, x2, x3, o1, o2, qmask)
+        emotions_f, alpha_f = self.cs_rnn_f(r, x1, x2, x3, o1, o2, qmask)   # r就是U
         
         out_sense, _ = self.sense_gru(x1)
         

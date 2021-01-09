@@ -8,7 +8,8 @@ from dataloader import IEMOCAPRobertaCometDataset
 from model import MaskedNLLLoss
 # from commonsense_model import CommonsenseGRUModel
 # from commonsense_model import CommonsenseGCN
-from COMSGCN_v2_model import CommonsenseGCN
+# from COMSGCN_v2_model import CommonsenseGCN
+from COMSGCN_v3_model import CommonsenseGCN
 from sklearn.metrics import f1_score, accuracy_score
 
 
@@ -244,12 +245,16 @@ if __name__ == '__main__':
 
     score1 = test_fscores[0][np.argmin(valid_losses)]
     score2 = test_fscores[0][np.argmax(valid_fscores[0])]
-    scores = [score1, score2]
-    scores = [str(item) for item in scores]
 
     print('Test Scores: Weighted F1')
     print('@Best Valid Loss: {}'.format(score1))
     print('@Best Valid F1: {}'.format(score2))
+
+    scores_best = np.max(test_fscores[0])
+    print('@Best F1: {}'.format(scores_best))
+
+    scores = [score1, score2, scores_best]
+    scores = [str(item) for item in scores]
 
     rf = open('results/cosmgcn_iemocap_results.txt', 'a')
     rf.write('\t'.join(scores) + '\t' + str(args) + '\n')

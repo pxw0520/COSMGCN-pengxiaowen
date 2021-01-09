@@ -58,7 +58,11 @@ def train_or_eval_model(model, loss_function, dataloader, epoch, optimizer=None,
     for data in dataloader:
         if train:
             optimizer.zero_grad()
-            
+
+        '''
+        x1 -> effect on self; x2 -> reaction of self; x3 -> intent of self
+        o1 -> effect on others; o2 -> reaction of others
+        '''
         r1, r2, r3, r4, \
         x1, x2, x3, x4, x5, x6, \
         o1, o2, o3, \

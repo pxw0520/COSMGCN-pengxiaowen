@@ -1,9 +1,9 @@
 # -*-coding:utf-8-*-
 # Author:Xiaowen Peng
-# CreateDate: 2020/12/29 21:03
+# CreateDate: 2020/1/04 15:03
 # Description:
 '''
-简单用全连接层
+改用RNN 进行Context Encoding
 '''
 
 
@@ -438,6 +438,8 @@ class CommonsenseGCN(nn.Module):
         self.linear_o2_256128 = nn.Linear(256, 128)
 
         self.linear_last = nn.Linear(256 * 6, 2 * D_e)
+        # D_m=1024
+        self.gru = nn.GRU(input_size=1536, hidden_size=D_e, num_layers=2, bidirectional=True, dropout=dropout)   # D_e=450 双向900
 
 
         max_seq_len = 110
@@ -569,8 +571,11 @@ class CommonsenseGCN(nn.Module):
 
         emotions = torch.cat([r, x1_, x2_, x3_, o1_, o2_], dim=-1)
 
-        emotions = self.linear_last(emotions)
-        emotions = self.dropout_rec(emotions)   # 74 16 900
+        # emotions = self.linear_last(emotions)   # 1536->900
+
+        emotions, hidden = self.gru(emotions)
+
+        emotions = self.dropout_rec(emotions)   # 74，16，900
 
         # --------------------------------------------------
         '''这里加GCN / FC: '''
