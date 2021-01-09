@@ -9,7 +9,8 @@ from model import MaskedNLLLoss
 # from commonsense_model import CommonsenseGRUModel
 # from commonsense_model import CommonsenseGCN
 # from COMSGCN_v2_model import CommonsenseGCN
-from COMSGCN_v3_model import CommonsenseGCN
+# from COMSGCN_v3_model import CommonsenseGCN
+from COMSGCN_v4_model import CommonsenseGCN
 from sklearn.metrics import f1_score, accuracy_score
 
 
