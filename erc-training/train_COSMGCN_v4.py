@@ -125,7 +125,7 @@ if __name__ == '__main__':
     parser.add_argument('--rec-dropout', type=float, default=0.1, metavar='rec_dropout', help='rec_dropout rate')
     parser.add_argument('--dropout', type=float, default=0.25, metavar='dropout', help='dropout rate')
     parser.add_argument('--batch-size', type=int, default=16, metavar='BS', help='batch size')
-    parser.add_argument('--epochs', type=int, default=60, metavar='E', help='number of epochs')
+    parser.add_argument('--epochs', type=int, default=100, metavar='E', help='number of epochs')
     parser.add_argument('--class-weight', action='store_true', default=False, help='use class weights')
     parser.add_argument('--active-listener', action='store_true', default=False, help='active listener')
     parser.add_argument('--attention', default='general2', help='Attention type in context GRU')
@@ -257,6 +257,6 @@ if __name__ == '__main__':
     scores = [score1, score2, scores_best]
     scores = [str(item) for item in scores]
 
-    rf = open('results/cosmgcn_iemocap_results_v4.txt', 'a')
+    rf = open('results/cosmgcn_v4_iemocap_results.txt', 'a')
     rf.write('\t'.join(scores) + '\t' + str(args) + '\n')
     rf.close()

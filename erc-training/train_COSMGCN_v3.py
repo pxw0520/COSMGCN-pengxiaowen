@@ -261,6 +261,6 @@ if __name__ == '__main__':
     scores = [score1, score2, scores_best]
     scores = [str(item) for item in scores]
 
-    rf = open('results/cosmgcn_iemocap_results_v3.txt', 'a')
+    rf = open('results/cosmgcn_v3_iemocap_results.txt', 'a')
     rf.write('\t'.join(scores) + '\t' + str(args) + '\n')
     rf.close()
