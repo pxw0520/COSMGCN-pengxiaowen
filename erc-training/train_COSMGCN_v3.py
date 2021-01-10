@@ -1,3 +1,8 @@
+# -*-coding:utf-8-*-
+# Author:Xiaowen Peng
+# CreateDate: 2021/1/04 10:27
+# Description:
+
 import numpy as np, argparse, time, pickle, random
 import torch
 import torch.nn as nn
@@ -9,8 +14,7 @@ from model import MaskedNLLLoss
 # from commonsense_model import CommonsenseGRUModel
 # from commonsense_model import CommonsenseGCN
 # from COMSGCN_v2_model import CommonsenseGCN
-# from COMSGCN_v3_model import CommonsenseGCN
-from COMSGCN_v4_model import CommonsenseGCN
+from COMSGCN_v3_model import CommonsenseGCN
 from sklearn.metrics import f1_score, accuracy_score
 
 
@@ -257,6 +261,6 @@ if __name__ == '__main__':
     scores = [score1, score2, scores_best]
     scores = [str(item) for item in scores]
 
-    rf = open('results/cosmgcn_iemocap_results.txt', 'a')
+    rf = open('results/cosmgcn_iemocap_results_v3.txt', 'a')
     rf.write('\t'.join(scores) + '\t' + str(args) + '\n')
     rf.close()

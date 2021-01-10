@@ -6,8 +6,13 @@ from torch.utils.data import DataLoader
 from torch.nn import functional as F
 from dataloader import IEMOCAPRobertaCometDataset
 from model import MaskedNLLLoss
-from commonsense_model import CommonsenseGRUModel
+# from commonsense_model import CommonsenseGRUModel
+# from commonsense_model import CommonsenseGCN
+# from COMSGCN_v2_model import CommonsenseGCN
+# from COMSGCN_v3_model import CommonsenseGCN
+from COMSGCN_v4_model import CommonsenseGCN
 from sklearn.metrics import f1_score, accuracy_score
+
 
 def seed_everything(seed):
     random.seed(seed)
@@ -17,6 +22,7 @@ def seed_everything(seed):
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
+
 
 def get_IEMOCAP_loaders(batch_size=32, num_workers=0, pin_memory=False):
     trainset = IEMOCAPRobertaCometDataset('train')
@@ -43,12 +49,14 @@ def get_IEMOCAP_loaders(batch_size=32, num_workers=0, pin_memory=False):
 
     return train_loader, valid_loader, test_loader
 
-def train_or_eval_model(model, loss_function, dataloader, epoch, optimizer=None, train=False):
-    losses, preds, labels, masks, losses_sense  = [], [], [], [], []
-    alphas, alphas_f, alphas_b, vids = [], [], [], []
-    max_sequence_len = []
 
-    assert not train or optimizer!=None
+def train_or_eval_model(model, loss_function, dataloader, epoch, optimizer=None, train=False):
+    losses, preds, labels = [], [], []
+    scores, vids = [], []
+
+    ei, et, en, el = torch.empty(0).type(torch.LongTensor), torch.empty(0).type(torch.LongTensor), torch.empty(0), []
+
+    assert not train or optimizer != None
     if train:
         model.train()
     else:
@@ -59,55 +67,53 @@ def train_or_eval_model(model, loss_function, dataloader, epoch, optimizer=None,
         if train:
             optimizer.zero_grad()
 
-        '''
-        x1 -> effect on self; x2 -> reaction of self; x3 -> intent of self
-        o1 -> effect on others; o2 -> reaction of others
-        '''
         r1, r2, r3, r4, \
         x1, x2, x3, x4, x5, x6, \
         o1, o2, o3, \
         qmask, umask, label = [d.cuda() for d in data[:-1]] if cuda else data[:-1]
-        
-        log_prob, _, alpha, alpha_f, alpha_b, _ = model(r1, r2, r3, r4, x5, x6, x1, o2, o3, qmask, umask, att2=True)
 
-        lp_ = log_prob.transpose(0,1).contiguous().view(-1, log_prob.size()[2]) # batch*seq_len, n_classes
-        labels_ = label.view(-1) # batch*seq_len
-        loss = loss_function(lp_, labels_, umask)
+        lengths = [(umask[j] == 1).nonzero().tolist()[-1][0] + 1 for j in range(len(umask))]
 
-        pred_ = torch.argmax(lp_,1) # batch*seq_len
-        preds.append(pred_.data.cpu().numpy())
-        labels.append(labels_.data.cpu().numpy())
-        masks.append(umask.view(-1).cpu().numpy())
-        losses.append(loss.item()*masks[-1].sum())
+        log_prob, e_i, e_n, e_t, e_l = model(r1, r2, r3, r4, x5, x6, x1, o2, o3, qmask, umask, att2=True)
+        label = torch.cat([label[j][:lengths[j]] for j in range(len(label))])
+        loss = loss_function(log_prob, label)
+
+        ei = torch.cat([ei, e_i], dim=1)
+        et = torch.cat([et, e_t])
+        en = torch.cat([en, e_n])
+        el += e_l
+
+        preds.append(torch.argmax(log_prob, 1).cpu().numpy())
+        labels.append(label.cpu().numpy())
+        losses.append(loss.item())
 
         if train:
-            total_loss = loss
-            total_loss.backward()
+            loss.backward()
             if args.tensorboard:
                 for param in model.named_parameters():
                     writer.add_histogram(param[0], param[1].grad, epoch)
             optimizer.step()
-        else:
-            alphas += alpha
-            alphas_f += alpha_f
-            alphas_b += alpha_b
-            vids += data[-1]
 
-    if preds!=[]:
-        preds  = np.concatenate(preds)
+    if preds != []:
+        preds = np.concatenate(preds)
         labels = np.concatenate(labels)
-        masks  = np.concatenate(masks)
     else:
-        return float('nan'), float('nan'), float('nan'), [], [], [], float('nan'),[]
+        return float('nan'), float('nan'), [], [], float('nan'), [], [], [], [], []
 
-    avg_loss = round(np.sum(losses)/np.sum(masks), 4)
-    avg_sense_loss = round(np.sum(losses_sense)/np.sum(masks), 4)
+    vids += data[-1]
+    ei = ei.data.cpu().numpy()
+    et = et.data.cpu().numpy()
+    en = en.data.cpu().numpy()
+    el = np.array(el)
+    labels = np.array(labels)
+    preds = np.array(preds)
+    vids = np.array(vids)
 
-    avg_accuracy = round(accuracy_score(labels,preds, sample_weight=masks)*100, 2)
-    avg_fscore = round(f1_score(labels,preds, sample_weight=masks, average='weighted')*100, 2)
-    
-    return avg_loss, avg_accuracy, labels, preds, masks, [avg_fscore], [alphas, alphas_f, alphas_b, vids]
+    avg_loss = round(np.sum(losses) / len(losses), 4)
+    avg_accuracy = round(accuracy_score(labels, preds) * 100, 2)
+    avg_fscore = round(f1_score(labels, preds, average='weighted') * 100, 2)
 
+    return avg_loss, avg_accuracy, labels, preds, [avg_fscore], vids, ei, et, en, el
 
 if __name__ == '__main__':
 
@@ -140,15 +146,16 @@ if __name__ == '__main__':
 
     if args.tensorboard:
         from tensorboardX import SummaryWriter
+
         writer = SummaryWriter()
 
     emo_gru = True
-    n_classes  = 6
-    cuda       = args.cuda
-    n_epochs   = args.epochs
+    n_classes = 6
+    cuda = args.cuda
+    n_epochs = args.epochs
     batch_size = args.batch_size
 
-    global  D_s
+    global D_s
 
     D_m = 1024
     D_s = 768
@@ -164,8 +171,8 @@ if __name__ == '__main__':
     global seed
     seed = args.seed
     # seed_everything(seed)
-    
-    model = CommonsenseGRUModel(D_m, D_s, D_g, D_p, D_r, D_i, D_e, D_h, D_a,
+
+    model = CommonsenseGCN(D_m, D_s, D_g, D_p, D_r, D_i, D_e, D_h, D_a,
                                 n_classes=n_classes,
                                 listener_state=args.active_listener,
                                 context_attention=args.attention,
@@ -176,27 +183,27 @@ if __name__ == '__main__':
                                 norm=args.norm,
                                 residual=args.residual)
 
-    print ('IEMOCAP COSMIC Model.')
-
+    print('IEMOCAP COSMGCN Model.')
 
     if cuda:
         model.cuda()
 
-    loss_weights = torch.FloatTensor([1/0.086747,
-                                      1/0.144406,
-                                      1/0.227883,
-                                      1/0.160585,
-                                      1/0.127711,
-                                      1/0.252668])
+    loss_weights = torch.FloatTensor([1 / 0.086747,
+                                      1 / 0.144406,
+                                      1 / 0.227883,
+                                      1 / 0.160585,
+                                      1 / 0.127711,
+                                      1 / 0.252668])
 
     if args.class_weight:
-        loss_function  = MaskedNLLLoss(loss_weights.cuda() if cuda else loss_weights)
+        loss_function = MaskedNLLLoss(loss_weights.cuda() if cuda else loss_weights)
     else:
-        loss_function = MaskedNLLLoss()
+        # loss_function = MaskedNLLLoss()   # fixme
+        loss_function = nn.NLLLoss()
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2)
-    
-    lf = open('logs/cosmic_iemocap_logs.txt', 'a')
+
+    lf = open('logs/cosmgcn_iemocap_logs.txt', 'a')
 
     train_loader, valid_loader, test_loader = get_IEMOCAP_loaders(batch_size=batch_size,
                                                                   num_workers=0)
@@ -207,34 +214,40 @@ if __name__ == '__main__':
 
     for e in range(n_epochs):
         start_time = time.time()
-        train_loss, train_acc, _, _, _, train_fscore, _ = train_or_eval_model(model, loss_function, train_loader, e, optimizer, True)
-        valid_loss, valid_acc, _, _, _, valid_fscore, _ = train_or_eval_model(model, loss_function, valid_loader, e)
-        test_loss, test_acc, test_label, test_pred, test_mask, test_fscore, attentions = train_or_eval_model(model, loss_function, test_loader, e)
-            
+        train_loss, train_acc, _, _, train_fscore, _, _, _, _, _ = train_or_eval_model(model, loss_function, train_loader, e,
+                                                                              optimizer, True)
+        valid_loss, valid_acc, _, _, valid_fscore, _, _, _, _, _ = train_or_eval_model(model, loss_function, valid_loader, e)
+        test_loss, test_acc, test_label, test_pred, test_fscore, _, _, _, _, _ = train_or_eval_model(model,
+                                                                                                             loss_function,
+                                                                                                             test_loader,
+                                                                                                             e)
+
         valid_losses.append(valid_loss)
         valid_fscores.append(valid_fscore)
         test_losses.append(test_loss)
         test_fscores.append(test_fscore)
-        
+
         if args.tensorboard:
-            writer.add_scalar('test: accuracy/loss', test_acc/test_loss, e)
-            writer.add_scalar('train: accuracy/loss', train_acc/train_loss, e)
-            
-        x = 'epoch: {}, train_loss: {}, acc: {}, fscore: {}, valid_loss: {}, acc: {}, fscore: {}, test_loss: {}, acc: {}, fscore: {}, time: {} sec'.format(e+1, train_loss, train_acc, train_fscore, valid_loss, valid_acc, valid_fscore, test_loss, test_acc, test_fscore, round(time.time()-start_time, 2))
-        
-        print (x)
+            writer.add_scalar('test: accuracy/loss', test_acc / test_loss, e)
+            writer.add_scalar('train: accuracy/loss', train_acc / train_loss, e)
+
+        x = 'epoch: {}, train_loss: {}, acc: {}, fscore: {}, valid_loss: {}, acc: {}, fscore: {}, test_loss: {}, acc: {}, fscore: {}, time: {} sec'.format(
+            e + 1, train_loss, train_acc, train_fscore, valid_loss, valid_acc, valid_fscore, test_loss, test_acc,
+            test_fscore, round(time.time() - start_time, 2))
+
+        print(x)
         lf.write(x + '\n')
-               
+
     if args.tensorboard:
         writer.close()
-        
+
     valid_fscores = np.array(valid_fscores).transpose()
     test_fscores = np.array(test_fscores).transpose()
-    
+
     score1 = test_fscores[0][np.argmin(valid_losses)]
     score2 = test_fscores[0][np.argmax(valid_fscores[0])]
-    
-    print ('Test Scores: Weighted F1')
+
+    print('Test Scores: Weighted F1')
     print('@Best Valid Loss: {}'.format(score1))
     print('@Best Valid F1: {}'.format(score2))
 
@@ -244,7 +257,6 @@ if __name__ == '__main__':
     scores = [score1, score2, scores_best]
     scores = [str(item) for item in scores]
 
-    rf = open('results/cosmic_iemocap_results_origin.txt', 'a')
+    rf = open('results/cosmgcn_iemocap_results_v4.txt', 'a')
     rf.write('\t'.join(scores) + '\t' + str(args) + '\n')
     rf.close()
-    

@@ -520,9 +520,9 @@ class CommonsenseGCN(nn.Module):
             raise ValueError
 
 
-        emotions = torch.cat([r, x1, x2, x3, o1, o2], dim=-1)  #1024+768*5=2560
+        emotions = torch.cat([r, x1, x2, x3, o1, o2], dim=-1)  #1024+768*5=4864
 
-        # emotions = self.linear_last(emotions)   # 1536->900
+        # emotions = self.linear_last(emotions)   # 4864->900
 
         emotions, hidden = self.gru(emotions)
 
