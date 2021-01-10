@@ -1,0 +1,2 @@
+62.6	62.6	65.39	Namespace(active_listener=False, attention='general2', batch_size=16, class_weight=False, cuda=False, dropout=0.25, epochs=60, l2=0.0003, lr=0.0001, mode1=2, no_cuda=False, norm=3, rec_dropout=0.1, residual=False, seed=100, tensorboard=False)
+62.41	64.36	65.58	Namespace(active_listener=False, attention='general2', batch_size=16, class_weight=False, cuda=False, dropout=0.25, epochs=60, l2=0.0003, lr=0.0001, mode1=2, no_cuda=False, norm=3, rec_dropout=0.1, residual=False, seed=100, tensorboard=False)
